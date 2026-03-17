@@ -1,49 +1,72 @@
 from pathlib import Path
-from src.const import DATA_URL, DATA_PATH
-import requests
 from zipfile import ZipFile
+import hashlib
+
+import requests
+from rich.progress import (
+    Progress,
+    BarColumn,
+    DownloadColumn,
+    TransferSpeedColumn,
+    TimeRemainingColumn,
+)
+
+from src.const import DATA_URL, DATA_PATH, DATA_HASH
 
 
 def download_data(save_path: Path | str, verbose: bool = True):
     save_path = Path(save_path)
-    dir = save_path.parent if save_path.is_file() else save_path
-    dir.mkdir(parents=True, exist_ok=True)
-    if verbose:
-        print(f"Downloading data from {DATA_URL} to {dir}...")
-    # Get Zip file
+    save_path.mkdir(parents=True, exist_ok=True)
+
+    temp_file = save_path / "temp.zip"
+
+    # Download and hash in one pass
     response = requests.get(DATA_URL, stream=True)
-    temp_file = save_path / "temp.zip"
+    response.raise_for_status()
+
     total = int(response.headers.get("content-length", 0))
-    chunk_size = 8192
-    with open(temp_file, "wb") as f:
-        downloaded = 0
-        for chunk in response.iter_content(chunk_size=chunk_size):
-            if chunk:
+    h = hashlib.sha256()
+
+    with Progress(
+        "[progress.description]{task.description}",
+        BarColumn(),
+        DownloadColumn(),
+        TransferSpeedColumn(),
+        TimeRemainingColumn(),
+        disable=not verbose,
+    ) as progress:
+        task = progress.add_task("Downloading", total=total or None)
+
+        with open(temp_file, "wb") as f:
+            for chunk in response.iter_content(chunk_size=1 << 20):
                 f.write(chunk)
-                downloaded += len(chunk)
-                if verbose and total:
-                    done = int(50 * downloaded / total)
-                    print(
-                        "\r[{}{}] {:.1f}%".format(
-                            "=" * done, " " * (50 - done), 100 * downloaded / total
-                        ),
-                        end="",
-                    )
-        if verbose and total:
-            print()
+                h.update(chunk)
+                progress.advance(task, len(chunk))
+
+    # Verify checksum
+    digest = h.hexdigest()
+    if digest != DATA_HASH:
+        temp_file.unlink()
+        raise ValueError(f"Hash mismatch: expected {DATA_HASH}, got {digest}")
     if verbose:
-        print("Download Status:", response.status_code)
-    temp_file = save_path / "temp.zip"
+        print("Checksum verified.")
 
-    with open(temp_file, "wb") as f:
-        f.write(response.content)
-
-    # Unzip file
-    with ZipFile(temp_file, "r") as zip_ref:
-        zip_ref.extractall(dir)
-
-    # Remove temp file
+    # Recursively unzip
+    _unzip_recursive(temp_file, save_path, verbose=verbose)
     temp_file.unlink()
+
+
+def _unzip_recursive(zip_path: Path, dest: Path, verbose: bool = True):
+    with ZipFile(zip_path, "r") as zf:
+        zf.extractall(dest)
+
+    for extracted in dest.rglob("*.zip"):
+        if extracted == zip_path:
+            continue
+        if verbose:
+            print(f"Unzipping nested: {extracted.relative_to(dest)}")
+        _unzip_recursive(extracted, extracted.parent, verbose=verbose)
+        extracted.unlink()
 
 
 if __name__ == "__main__":
