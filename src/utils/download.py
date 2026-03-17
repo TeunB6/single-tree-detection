@@ -3,6 +3,7 @@ from src.const import DATA_URL
 import requests
 from zipfile import ZipFile
 
+
 def download_data(save_path: Path | str, verbose: bool = True):
     save_path = Path(save_path)
     dir = save_path.parent if save_path.is_file() else save_path
@@ -13,19 +14,14 @@ def download_data(save_path: Path | str, verbose: bool = True):
     response = requests.get(DATA_URL)
     if verbose:
         print("Download Status:", response.status_code)
-    temp_file = save_path / 'temp.zip'
-    
-    with open(temp_file, 'wb') as f:
+    temp_file = save_path / "temp.zip"
+
+    with open(temp_file, "wb") as f:
         f.write(response.content)
-    
-    
+
     # Unzip file
-    with ZipFile(temp_file, 'r') as zip_ref:
+    with ZipFile(temp_file, "r") as zip_ref:
         zip_ref.extractall(dir)
-    
+
     # Remove temp file
     temp_file.unlink()
-    
-    
-    
-    
