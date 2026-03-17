@@ -1,5 +1,5 @@
 from pathlib import Path
-from src.const import DATA_URL
+from src.const import DATA_URL, DATA_PATH
 import requests
 from zipfile import ZipFile
 
@@ -25,3 +25,7 @@ def download_data(save_path: Path | str, verbose: bool = True):
 
     # Remove temp file
     temp_file.unlink()
+
+
+if __name__ == "__main__":
+    download_data(DATA_PATH)
