@@ -9,5 +9,6 @@ PT_DATA_PATH = DATA_PATH / "pt_data"
 LOG_DIR = Path("logs/")
 LOGGER = Logger("neon_tree")
 # mean + stdev placeholder values before calculating our actual values
-CHANNEL_MEANS = (0.485, 0.456, 0.406)
-CHANNEL_STDEVS = (0.229, 0.224, 0.225)
+CHANNEL_MEANS = (0.5436624, 0.5296872, 0.4485631, 1.8764671)
+CHANNEL_STDEVS = (0.5436624, 0.5296872, 0.4485631, 1.8764671)
+CHM_MAX = 60.575721740722656

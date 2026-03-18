@@ -1,5 +1,5 @@
 from src.utils.singleton import SingletonMeta
-from src.const import NEON_TREE_PATH, PT_DATA_PATH, LOGGER
+from src.const import NEON_TREE_PATH, PT_DATA_PATH, LOGGER, CHM_MAX
 import xmltodict
 from torchvision.tv_tensors import BoundingBoxes
 import torch
@@ -58,6 +58,7 @@ class SetupNeonTreeData(metaclass=SingletonMeta):
                 continue
             rgb = self._load_image(img_path)
             chm = self._load_image(chm_path, target_size=rgb.shape[1:])
+            chm = torch.clamp(chm, min=0) / CHM_MAX
             # Reshape to match dim
             LOGGER.debug(f"{rgb.shape}, {chm.shape}")
             bounding_boxes = self._load_bounding_boxes(
