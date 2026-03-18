@@ -9,7 +9,7 @@ def main():
     if not Path(DATA_PATH).exists():
         download_data(DATA_PATH)
     cleanup_files(NEON_TREE_PATH)
-    data = SetupNeonTreeData()
+    data = SetupNeonTreeData(force_overwrite=True)
     print("Data loaded successfully.")
 
 

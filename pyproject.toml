@@ -12,4 +12,5 @@ dependencies = [
     "scikit-image>=0.26.0",
     "torchvision>=0.25.0",
     "xmltodict>=1.0.4",
+    "imagecodecs>=2026.3.6",
 ]
