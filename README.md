@@ -65,11 +65,3 @@ Two reference documents in `tex/` are aimed at team members new to ML:
   from first principles, grounded in tree crown detection examples.
 - **codebase_guide.pdf** -- walks through every source file, explaining what
   problem each one solves and why it is written the way it is.
-
-## Normalisation constants
-
-`CHANNEL_MEANS` and `CHANNEL_STDEVS` in `const.py` are per-channel statistics
-used to normalise images before they enter the model. The current values were
-computed from the training and test splits using `normalization_params.py`.
-If the dataset or preprocessing changes, rerun that script and update the
-constants.
