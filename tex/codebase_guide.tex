@@ -1,0 +1,696 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{titlesec}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{tcolorbox}
+\usepackage{graphicx}
+
+% ---- colours ----------------------------------------------------------------
+\definecolor{codebg}{HTML}{F5F5F5}
+\definecolor{codeframe}{HTML}{CCCCCC}
+\definecolor{keywordcol}{HTML}{0060AD}
+\definecolor{commentcol}{HTML}{5C8A00}
+\definecolor{stringcol}{HTML}{C0392B}
+\definecolor{numbercol}{HTML}{7D3C98}
+\definecolor{notebg}{HTML}{EAF4FB}
+\definecolor{noteframe}{HTML}{5DADE2}
+\definecolor{warnbg}{HTML}{FEF9E7}
+\definecolor{warnframe}{HTML}{F39C12}
+\definecolor{filebg}{HTML}{F0F4F0}
+\definecolor{fileframe}{HTML}{3D8B37}
+
+% ---- code listings ----------------------------------------------------------
+\lstset{
+  language=Python,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{keywordcol}\bfseries,
+  commentstyle=\color{commentcol}\itshape,
+  stringstyle=\color{stringcol},
+  numberstyle=\tiny\color{numbercol},
+  showstringspaces=false,
+  breaklines=true,
+  breakatwhitespace=true,
+  tabsize=4,
+  aboveskip=0.8em,
+  belowskip=0.8em,
+}
+
+% ---- callout boxes ----------------------------------------------------------
+\tcbuselibrary{skins, breakable}
+
+\newenvironment{note}{%
+  \begin{tcolorbox}[
+    colback=notebg, colframe=noteframe,
+    fonttitle=\bfseries, title=Note,
+    breakable, enhanced
+  ]
+}{%
+  \end{tcolorbox}
+}
+
+\newenvironment{intuition}{%
+  \begin{tcolorbox}[
+    colback=warnbg, colframe=warnframe,
+    fonttitle=\bfseries, title=Why does the code do this?,
+    breakable, enhanced
+  ]
+}{%
+  \end{tcolorbox}
+}
+
+\newenvironment{filebox}[1]{%
+  \begin{tcolorbox}[
+    colback=filebg, colframe=fileframe,
+    fonttitle=\bfseries\ttfamily, title=#1,
+    breakable, enhanced
+  ]
+}{%
+  \end{tcolorbox}
+}
+
+% ---- section styling --------------------------------------------------------
+\titleformat{\section}{\large\bfseries}{}{0em}{}[\titlerule]
+\titleformat{\subsection}{\normalsize\bfseries}{}{0em}{}
+
+% ---- page style -------------------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\textit{Codebase Guide -- NeonTreeEvaluation Working Group}}
+\rhead{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ---- hyperref ---------------------------------------------------------------
+\hypersetup{
+  colorlinks=true,
+  linkcolor=keywordcol,
+  urlcolor=keywordcol,
+}
+
+% =============================================================================
+\begin{document}
+
+\begin{center}
+  {\LARGE\bfseries Codebase Guide}\\[0.4em]
+  {\large NeonTreeEvaluation Working Group}\\[0.2em]
+  {\normalsize\color{gray} A walkthrough of every file and the problem it solves}
+\end{center}
+
+\vspace{1em}
+\tableofcontents
+\vspace{1em}
+
+% =============================================================================
+\section{Overview}
+
+The code in this repository does one thing right now: take the raw
+NeonTreeEvaluation dataset as downloaded from the internet and transform it
+into a form that a PyTorch model can consume directly. None of the model
+architecture or training logic is written yet. What exists is the data
+pipeline -- the plumbing that sits between the raw files on disk and the
+training loop.
+
+The pipeline has to solve several concrete problems that are not obvious until
+you actually work with the dataset:
+
+\begin{itemize}[nosep]
+  \item The download is large and may fail partway through; we need to detect
+        this and avoid silently training on corrupted data.
+  \item The archive contains zip files inside zip files; a single unzip is not
+        enough.
+  \item After unzipping, some directories are double-nested in a way that
+        breaks any code that assumes a flat structure.
+  \item The raw images are GeoTIFF files. Converting them to PyTorch tensors
+        takes several seconds per image. Doing this conversion on every training
+        run would be prohibitively slow, so we do it once and save the result.
+  \item The RGB imagery and the LiDAR canopy height (CHM) imagery were captured
+        at different resolutions, so they do not line up pixel-for-pixel out of
+        the box.
+  \item The annotation files list bounding boxes in XML format. When a file
+        contains only a single tree, the XML parser returns a different data
+        structure than when it contains multiple trees, which would silently
+        drop single-tree annotations if not handled.
+\end{itemize}
+
+The sections below walk through each source file in the order you would
+encounter it if you traced a run from \texttt{main.py} downward.
+
+% =============================================================================
+\section{\texttt{main.py}}
+
+\begin{filebox}{main.py}
+  The entry point. Run this file to execute the full setup pipeline.
+\end{filebox}
+
+\begin{lstlisting}
+from src.utils.download import download_data, cleanup_files
+from src.const import DATA_PATH, NEON_TREE_PATH
+from src.data.setup import SetupNeonTreeData
+from pathlib import Path
+
+def main():
+    if not Path(DATA_PATH).exists():
+        download_data(DATA_PATH)
+    cleanup_files(NEON_TREE_PATH)
+    data = SetupNeonTreeData(force_overwrite=True)
+    print("Data loaded successfully.")
+\end{lstlisting}
+
+\texttt{main.py} is deliberately thin. It sequences three steps:
+
+\begin{enumerate}[nosep]
+  \item Download the raw dataset if the local \texttt{data/} directory does
+        not yet exist.
+  \item Fix the directory structure problems left by the unzipper
+        (see \texttt{download.py}).
+  \item Run the full preprocessing pipeline to convert raw images into cached
+        PyTorch files.
+\end{enumerate}
+
+Having a single entry point like this means anyone on the team can set up the
+project from scratch by running one command, without needing to know the
+internal details of how the data is obtained or organised.
+
+% =============================================================================
+\section{\texttt{src/const.py}}
+
+\begin{filebox}{src/const.py}
+  A single place where every project-wide constant lives.
+\end{filebox}
+
+\begin{lstlisting}
+from pathlib import Path
+from src.utils.logger import Logger
+
+DATA_URL    = "https://owncloud.gwdg.de/..."
+DATA_PATH   = Path("data/")
+DATA_HASH   = "0ad723302caa8f34..."
+NEON_TREE_PATH = DATA_PATH / "neon_tree" / "NeonTreeEvaluation"
+PT_DATA_PATH   = DATA_PATH / "pt_data"
+LOG_DIR     = Path("logs/")
+LOGGER      = Logger("neon_tree")
+
+# placeholder values until we compute the real ones from our data
+CHANNEL_MEANS  = (0.485, 0.456, 0.406)
+CHANNEL_STDEVS = (0.229, 0.224, 0.225)
+\end{lstlisting}
+
+The purpose of \texttt{const.py} is to prevent path strings from being
+scattered across the codebase. If the dataset ever moves to a different
+directory, or we switch hosting providers for the download, there is exactly
+one file to edit. Every other file imports its paths from here rather than
+hardcoding them.
+
+\texttt{CHANNEL\_MEANS} and \texttt{CHANNEL\_STDEVS} are the normalisation
+statistics used to preprocess images before they enter the model. The values
+currently in the file are the ImageNet statistics (a standard starting point
+from the ML primer), marked with a comment indicating they are placeholders.
+The \texttt{normalization\_params.py} utility exists to compute our
+dataset-specific values, at which point these constants will be updated.
+
+% =============================================================================
+\section{\texttt{src/utils/download.py}}
+
+\begin{filebox}{src/utils/download.py}
+  Downloads the dataset, verifies its integrity, and unpacks nested archives.
+\end{filebox}
+
+\subsection{Streaming download with a checksum}
+
+The dataset file is large. A naive download that reads the entire response
+into memory would crash on any machine without enough RAM, and a download that
+saves to disk without verification could silently produce a corrupted file if
+the connection dropped partway through.
+
+\texttt{download\_data} solves both problems at once by streaming the response
+in 1\,MB chunks, writing each chunk to disk and feeding it into a SHA-256 hash
+function simultaneously:
+
+\begin{lstlisting}
+h = hashlib.sha256()
+for chunk in response.iter_content(chunk_size=1 << 20):
+    f.write(chunk)
+    h.update(chunk)
+
+digest = h.hexdigest()
+if digest != DATA_HASH:
+    temp_file.unlink()        # delete the corrupted file
+    raise ValueError(...)     # and refuse to continue
+\end{lstlisting}
+
+SHA-256 is a mathematical function that produces a fixed-length fingerprint
+from any input. The fingerprint stored in \texttt{DATA\_HASH} was computed
+from the original, known-good archive. If any byte in the downloaded file
+differs -- due to a dropped connection, a server error, or file corruption --
+the fingerprint will not match and the code raises an error before any further
+processing happens. The incomplete file is deleted automatically so a second
+attempt starts fresh rather than skipping the download because a partial file
+already exists.
+
+The \texttt{rich} library's \texttt{Progress} class provides the animated
+download progress bar. This is purely cosmetic and can be disabled by passing
+\texttt{verbose=False}.
+
+\subsection{Recursive unzipping}
+
+The NeonTreeEvaluation archive is a zip file that contains further zip files
+inside it (one per data modality). A single \texttt{unzip} call extracts the
+outer archive but leaves the inner ones untouched.
+\texttt{\_unzip\_recursive} handles this by extracting an archive and then
+scanning the result for any further \texttt{.zip} files, repeating until none
+remain:
+
+\begin{lstlisting}
+def _unzip_recursive(zip_path, dest, verbose=True):
+    with ZipFile(zip_path, "r") as zf:
+        zf.extractall(dest)
+
+    for extracted in dest.rglob("*.zip"):
+        if extracted == zip_path:
+            continue
+        _unzip_recursive(extracted, extracted.parent / extracted.stem, verbose)
+        extracted.unlink()   # delete the .zip once extracted
+\end{lstlisting}
+
+Each inner archive is extracted into a subdirectory named after the archive
+itself (e.g. \texttt{RGB.zip} extracts into \texttt{RGB/}), and then the
+\texttt{.zip} is deleted to save disk space.
+
+\subsection{Fixing double-nested directories}
+
+After extraction, the dataset has a structural quirk: the
+\texttt{evaluation/} and \texttt{annotations/} directories each contain a
+subdirectory with the same name as themselves. That is, the files end up at
+paths like:
+
+\begin{center}
+  \texttt{NeonTreeEvaluation/evaluation/evaluation/SJER\_006.tif}
+\end{center}
+
+instead of the expected:
+
+\begin{center}
+  \texttt{NeonTreeEvaluation/evaluation/SJER\_006.tif}
+\end{center}
+
+\texttt{cleanup\_files} detects this pattern and collapses it by moving every
+item from the inner directory up to the outer one:
+
+\begin{lstlisting}
+def remove_nested(save_path, target_name):
+    dir        = save_path / target_name
+    nested_dir = dir / target_name          # e.g. evaluation/evaluation
+    if nested_dir.exists():
+        for item in nested_dir.iterdir():
+            shutil.move(str(item), dir / item.name)
+        nested_dir.rmdir()
+
+remove_nested(save_path, "evaluation")
+remove_nested(save_path, "annotations")
+\end{lstlisting}
+
+Without this step, every file-loading function would need to know about the
+double nesting and construct paths accordingly. Fixing it once at setup time
+means the rest of the code can assume the straightforward structure.
+
+% =============================================================================
+\section{\texttt{src/utils/singleton.py}}
+
+\begin{filebox}{src/utils/singleton.py}
+  A metaclass that ensures a class can only ever be instantiated once.
+\end{filebox}
+
+\begin{lstlisting}
+class SingletonMeta(type):
+    _instances = {}
+
+    def __call__(cls, *args, **kwargs):
+        if cls not in cls._instances:
+            instance = super().__call__(*args, **kwargs)
+            cls._instances[cls] = instance
+        return cls._instances[cls]
+\end{lstlisting}
+
+A \emph{metaclass} is a class whose instances are themselves classes. That is
+a confusing sentence, so here is the practical effect: any class that uses
+\texttt{SingletonMeta} as its metaclass will, the second time you try to
+create an instance, just hand you back the instance that was created the first
+time.
+
+\begin{intuition}
+  \texttt{SetupNeonTreeData} (described in Section~\ref{sec:setup}) is a
+  singleton because the preprocessing work it does -- reading every image from
+  disk and saving it as a \texttt{.pt} file -- is expensive and should only
+  run once per execution. If multiple parts of the codebase each tried to
+  construct a \texttt{SetupNeonTreeData} object independently, without the
+  singleton guarantee, they would each kick off the full preprocessing run
+  again. The singleton ensures that only the first construction does real work;
+  subsequent constructions silently return the already-initialised object.
+\end{intuition}
+
+% =============================================================================
+\section{\texttt{src/utils/logger.py}}
+
+\begin{filebox}{src/utils/logger.py}
+  A logging wrapper that writes structured records to a file and pretty output
+  to the terminal simultaneously.
+\end{filebox}
+
+\begin{lstlisting}
+class Logger:
+    def __init__(self, name):
+        self.console = Console()          # rich terminal output
+        self._logger = self._setup_logger(name)
+
+    def log_and_print(self, rich_object):
+        # render the object to plain text and write to the log file
+        ...
+        self._logger.info(plain_text)
+        # also render it to the terminal with colour and formatting
+        self.console.print(rich_object)
+
+    def __getattr__(self, name):
+        return getattr(self._logger, name)   # delegate .debug(), .warning() etc.
+\end{lstlisting}
+
+Python's built-in \texttt{logging} module writes plain text to log files.
+The \texttt{rich} library renders coloured, formatted output to the terminal.
+\texttt{Logger} combines both: \texttt{log\_and\_print} sends output to both
+destinations at once, while the \texttt{\_\_getattr\_\_} delegation means you
+can also call \texttt{LOGGER.debug(...)}, \texttt{LOGGER.warning(...)} and so
+on exactly as you would with a standard Python logger (these go to the file
+only, without terminal output).
+
+Each run of the program creates a new log file named with the current
+timestamp (e.g. \texttt{logs/2026-03-18\_14-32-07.log}). This means you can
+look back at the output from previous runs without it being overwritten.
+
+A single shared \texttt{LOGGER} instance is created in \texttt{const.py} and
+imported wherever it is needed, which keeps all log records for a given run in
+one file.
+
+% =============================================================================
+\section{\texttt{src/utils/transforms.py}}
+
+\begin{filebox}{src/utils/transforms.py}
+  A custom Torchvision transform that converts a raw image array into a
+  normalised float tensor.
+\end{filebox}
+
+\begin{lstlisting}
+class ToTensor(torch.nn.Module):
+    def forward(self, img, label=None):
+        converted = v2.Compose([
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+        ])(img)
+
+        if label is not None:
+            return converted, label
+        else:
+            return converted
+\end{lstlisting}
+
+Two conversions happen here in sequence:
+
+\begin{enumerate}[nosep]
+  \item \texttt{v2.ToImage()} converts the NumPy array returned by the image
+        reader into a PyTorch tensor and reorders the dimensions from
+        \texttt{(H, W, C)} to \texttt{(C, H, W)} -- PyTorch's expected
+        convention.
+  \item \texttt{v2.ToDtype(torch.float32, scale=True)} changes the numeric
+        type from unsigned 8-bit integers (values 0--255) to 32-bit floats
+        (values 0.0--1.0). The \texttt{scale=True} argument performs the
+        division by 255 automatically.
+\end{enumerate}
+
+\begin{intuition}
+  Why divide by 255? Neural network optimisers (the algorithms that update
+  the model's weights during training) are sensitive to the scale of the
+  numbers they see. Input values of 0--255 and weight values of approximately
+  0.0--1.0 are on very different scales, which makes training unstable.
+  Rescaling the inputs to 0.0--1.0 keeps everything in a compatible range.
+\end{intuition}
+
+The transform accepts an optional \texttt{label} argument and passes it
+through unchanged. This allows it to be used in contexts where an image and
+its annotation are processed together without accidentally discarding the
+annotation.
+
+% =============================================================================
+\section{\texttt{src/utils/normalization\_params.py}}
+
+\begin{filebox}{src/utils/normalization\_params.py}
+  A utility script for computing the channel-wise mean and standard deviation
+  of the dataset, to be run once and used to update \texttt{CHANNEL\_MEANS} and
+  \texttt{CHANNEL\_STDEVS} in \texttt{const.py}.
+\end{filebox}
+
+\begin{lstlisting}
+def get_images(data_dir):
+    files     = sorted(data_dir.glob("*.pt"))
+    unpickles = [torch.load(file, weights_only=False) for file in files]
+    images    = [np.asarray(image) for image, boxes in unpickles]
+    return np.stack(images)
+\end{lstlisting}
+
+This file is a standalone script (note the \texttt{if \_\_name\_\_ == "\_\_main\_\_"} block at the bottom) rather than a module imported by the rest of
+the code. Its job is to iterate over the cached \texttt{.pt} files, load the
+image tensors, stack them into a single large array, and compute statistics
+across the whole training set.
+
+\begin{note}
+  This script is not yet complete. The \texttt{means()} function currently
+  computes the per-channel means but does not return them -- a missing
+  \texttt{return} statement -- and there is no corresponding function for the
+  standard deviations. Once these are implemented, the values should replace
+  the ImageNet placeholders in \texttt{const.py}.
+
+  The reason we compute these from our own data rather than reusing ImageNet
+  values permanently is that our images are aerial photographs, which have a
+  different brightness distribution than ground-level photographs.
+  Dataset-specific normalisation values will give the model a more consistent
+  input distribution to work with.
+\end{note}
+
+% =============================================================================
+\section{\texttt{src/data/setup.py}}
+\label{sec:setup}
+
+\begin{filebox}{src/data/setup.py}
+  The main preprocessing class. Reads raw TIFFs and XML annotations, combines
+  RGB and CHM channels, and saves everything to disk as \texttt{.pt} files for
+  fast loading during training.
+\end{filebox}
+
+\subsection{Why preprocess and cache?}
+
+Loading a raw GeoTIFF, resizing it, converting it to a tensor, and parsing an
+XML file takes several seconds per image. A training run with thousands of
+iterations, each loading a new image, would spend more time on disk I/O than
+on actual learning. The standard solution is to do all the slow preprocessing
+once and save the result in a format that is fast to load -- in our case,
+PyTorch's native \texttt{.pt} format.
+
+\texttt{SetupNeonTreeData} uses the singleton pattern from
+\texttt{singleton.py} to guarantee that this preprocessing only ever runs once
+per program execution, regardless of how many times different parts of the code
+ask for a \texttt{SetupNeonTreeData} object.
+
+\subsection{The preprocessing loop}
+
+For each RGB image in the training or evaluation split, the code:
+
+\begin{enumerate}
+  \item Finds the corresponding annotation file (in \texttt{annotations/}) and
+        CHM file (in \texttt{CHM/}) by constructing the expected paths from the
+        image filename.
+  \item Skips the image with a warning if either the annotation or the CHM is
+        missing -- a graceful fallback rather than a crash.
+  \item Loads the RGB image as a tensor of shape \texttt{(3, H, W)}.
+  \item Loads the CHM image and resizes it to match the RGB spatial dimensions,
+        since the two modalities were captured at different resolutions.
+  \item Concatenates RGB and CHM along the channel dimension, producing a
+        4-channel tensor of shape \texttt{(4, H, W)}.
+  \item Parses the bounding boxes from the XML annotation file.
+  \item Saves the \texttt{(image\_tensor, bounding\_boxes)} pair to a
+        \texttt{.pt} file.
+\end{enumerate}
+
+\subsection{Merging RGB and CHM}
+
+The channel concatenation step is the most consequential data design decision
+in the codebase so far:
+
+\begin{lstlisting}
+rgb  = self._load_image(img_path)                    # shape: (3, H, W)
+chm  = self._load_image(chm_path, target_size=rgb.shape[1:])  # shape: (1, H, W)
+comb = torch.cat([rgb, chm], dim=0)                  # shape: (4, H, W)
+\end{lstlisting}
+
+By stacking LiDAR height as a fourth channel alongside the three colour
+channels, the model can learn to use height information alongside colour when
+deciding whether a blob in the image is a tree crown. This is one of the main
+reasons to use the NEON dataset over ordinary aerial photography -- the height
+channel makes it much easier to distinguish tall trees from low shrubs that
+might look similar in colour alone.
+
+\subsection{Parsing bounding box annotations}
+
+The annotation files are in Pascal VOC XML format, the same format used in
+many standard computer vision datasets. A typical file looks like:
+
+\begin{lstlisting}[language=XML]
+<annotation>
+  <object>
+    <bndbox>
+      <xmin>45</xmin> <ymin>112</ymin>
+      <xmax>130</xmax> <ymax>198</ymax>
+    </bndbox>
+  </object>
+  <object> ... </object>
+</annotation>
+\end{lstlisting}
+
+The \texttt{xmltodict} library parses this into a Python dictionary. There is
+a subtle issue: when the file contains multiple \texttt{<object>} entries,
+\texttt{xmltodict} puts them in a list. When there is exactly one entry, it
+puts it in a dictionary directly (not inside a list). The code handles both
+cases explicitly:
+
+\begin{lstlisting}
+if isinstance(data["annotation"]["object"], list):
+    bounding_boxes = [[...] for object_dict in data["annotation"]["object"]]
+elif isinstance(data["annotation"]["object"], dict):
+    bounding_boxes = [[...]]   # wrap the single dict in a list
+\end{lstlisting}
+
+Without this check, images containing only one tree would silently fail to
+produce any annotations, corrupting the training data for those samples.
+
+The extracted coordinates are wrapped in a \texttt{BoundingBoxes} object from
+Torchvision, which stores not just the coordinates but also the format
+(\texttt{"XYXY"} -- two corner points, as opposed to centre-plus-size) and
+the canvas size (the image dimensions). Torchvision's transform pipeline uses
+this metadata to update bounding box coordinates correctly when the image is
+cropped or flipped during augmentation.
+
+% =============================================================================
+\section{\texttt{src/dataset.py}}
+
+\begin{filebox}{src/dataset.py}
+  The PyTorch \texttt{Dataset} class that the training loop will consume.
+\end{filebox}
+
+\begin{lstlisting}
+class TreeImageDataset(Dataset):
+    def __init__(self, input_dir, transforms=None):
+        SetupNeonTreeData()   # ensure preprocessing has been run
+        self.paths = sorted(input_dir.glob("*.pt"))
+        self.transform = Compose(transforms) if transforms else Compose([
+            RandomCrop(400),
+            Normalize(CHANNEL_MEANS, CHANNEL_STDEVS),
+            RandomHorizontalFlip(),
+            RandomVerticalFlip(),
+            SanitizeBoundingBoxes(),
+        ])
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, idx):
+        file, boxes = torch.load(self.paths[idx])
+        file = self.transform(file)
+        return file, boxes
+\end{lstlisting}
+
+\texttt{TreeImageDataset} is the class that the \texttt{DataLoader} described
+in the ML primer will wrap. It satisfies PyTorch's Dataset contract by
+implementing \texttt{\_\_len\_\_} (how many examples?) and
+\texttt{\_\_getitem\_\_} (give me example number \texttt{idx}).
+
+Loading from \texttt{.pt} files means \texttt{\_\_getitem\_\_} is fast: a
+single \texttt{torch.load} call, then the transform pipeline. No image
+decoding, no XML parsing, no resizing -- all of that was done once during
+setup.
+
+The default transform pipeline does the following to each example before
+returning it:
+
+\begin{enumerate}[nosep]
+  \item \textbf{RandomCrop(400)} -- cuts a random $400 \times 400$ pixel
+        window from the image. This is data augmentation: by showing the model
+        different crops of the same tile each time, we effectively multiply the
+        size of the training set without needing more labelled data.
+  \item \textbf{Normalize} -- subtracts the channel means and divides by
+        the standard deviations, shifting the pixel value distribution to be
+        centred near zero. This is expected by the pre-trained model
+        architecture.
+  \item \textbf{RandomHorizontalFlip / RandomVerticalFlip} -- randomly mirrors
+        the image left-right and/or top-bottom. Aerial imagery has no canonical
+        orientation (north can point in any direction), so all four orientations
+        are equally valid and showing the model all of them improves robustness.
+  \item \textbf{SanitizeBoundingBoxes} -- removes any bounding boxes that
+        ended up fully outside the cropped region after \texttt{RandomCrop},
+        and clamps any partially-outside boxes to the image edge. Without this
+        step, the model would receive annotations pointing to regions that do
+        not exist in the cropped image.
+\end{enumerate}
+
+Note that \texttt{SanitizeBoundingBoxes} only works correctly because the
+bounding boxes are stored as a Torchvision \texttt{BoundingBoxes} object
+(rather than a plain tensor). Torchvision's transforms know to treat
+\texttt{BoundingBoxes} specially, applying the same geometric transformation
+to the boxes as to the image. If the boxes were stored as a plain
+\texttt{torch.Tensor}, the \texttt{RandomCrop} would move the pixels but
+leave the box coordinates unchanged -- a silent, hard-to-detect bug.
+
+\begin{note}
+  The constructor calls \texttt{SetupNeonTreeData()} without arguments at
+  startup. Because \texttt{SetupNeonTreeData} is a singleton, this either
+  triggers preprocessing (if it has not been done yet) or returns the existing
+  instance immediately (if it has). This means you can construct a
+  \texttt{TreeImageDataset} without having run \texttt{main.py} first; the
+  dataset will set itself up automatically.
+\end{note}
+
+% =============================================================================
+\section{How the Files Fit Together}
+
+\begin{center}
+  \begin{tabular}{lll}
+    \toprule
+    \textbf{File}                           & \textbf{Role}      & \textbf{Key output}           \\
+    \midrule
+    \texttt{main.py}                        & entry point        & runs the full setup           \\
+    \texttt{const.py}                       & constants          & paths, hash, logger, stats    \\
+    \texttt{utils/download.py}              & fetch data         & verified, flat directory tree \\
+    \texttt{utils/singleton.py}             & pattern            & one-instance guarantee        \\
+    \texttt{utils/logger.py}                & observability      & file + terminal logging       \\
+    \texttt{utils/transforms.py}            & conversion         & float tensor from raw array   \\
+    \texttt{utils/normalization\_params.py} & statistics         & dataset mean/stdev (WIP)      \\
+    \texttt{data/setup.py}                  & preprocessing      & \texttt{.pt} files on disk    \\
+    \texttt{dataset.py}                     & training interface & batches of (image, boxes)     \\
+    \bottomrule
+  \end{tabular}
+\end{center}
+
+The flow is linear: \texttt{main.py} calls \texttt{download.py} to fetch and
+flatten the raw data, then calls \texttt{setup.py} to convert it into
+\texttt{.pt} files. From that point on, \texttt{dataset.py} is the only file
+that the training loop needs to interact with -- everything upstream of it has
+already done its work.
+
+\end{document}
