@@ -12,7 +12,7 @@ from torchvision.transforms.v2 import (
     RandomVerticalFlip,
     SanitizeBoundingBoxes,
 )
-from src.utils.transforms import ToTensor
+from src.data.transforms import ToTensor
 from rich.progress import track
 from skimage import io
 import numpy as np
@@ -84,10 +84,10 @@ class SetupNeonTreeData(metaclass=SingletonMeta):
         # load images and labels, create torch data, save to pt_data
         LOGGER.log_and_print(f"Processing {split} split...")
         num_files = len(list(in_path.glob("*.tif")))
-        LOGGER.debug(
-            f"Looking for images in: {in_path}\t{num_files} images found."
-        )
-        for img_path in track(in_path.glob("*.tif"), description=f"Loading {split}...", total=num_files):
+        LOGGER.debug(f"Looking for images in: {in_path}\t{num_files} images found.")
+        for img_path in track(
+            in_path.glob("*.tif"), description=f"Loading {split}...", total=num_files
+        ):
             # Setup output directories for images and bounding boxes
             out_path = PT_DATA_PATH / split
             out_path.mkdir(parents=True, exist_ok=True)
@@ -108,7 +108,7 @@ class SetupNeonTreeData(metaclass=SingletonMeta):
                 continue
             rgb = self._load_image(img_path)
             chm = self._load_image(chm_path, target_size=rgb.shape[1:])
-            
+
             # Normalize CHM to [0, 1] range and clamp negative values to 0
             chm = torch.clamp(chm, min=0) / CHM_MAX
             bounding_boxes = self._load_bounding_boxes(
@@ -116,41 +116,44 @@ class SetupNeonTreeData(metaclass=SingletonMeta):
             )
             comb = torch.cat([rgb, chm], dim=0)
             LOGGER.debug(f"Combined tensor shape: {comb.shape}")
-            
+
             # Generate random samples and save to .pt
-            num_samples = comb.shape[1] * comb.shape[2] // (
-                IMG_SIZE[0] * IMG_SIZE[1]
+            num_samples = (
+                comb.shape[1] * comb.shape[2] // (IMG_SIZE[0] * IMG_SIZE[1])
             )  # num samples proportional to image size
             transforms = Compose(
                 [
                     RandomCrop(400),
                     RandomHorizontalFlip(),
                     RandomVerticalFlip(),
-                    SanitizeBoundingBoxes(labels_getter = lambda x: x[1]),
+                    SanitizeBoundingBoxes(labels_getter=lambda x: x[1]),
                 ]
             )
-            
+
             if split == "train":
                 LOGGER.info(f"Generating {num_samples} samples from {img_path.name}...")
                 for s in range(num_samples):
                     # Get 400x400 random crop of the combined tensor and corresponding bounding boxes
-                    sample_comb, sample_boxes = transforms(
-                        (comb, bounding_boxes)
+                    sample_comb, sample_boxes = transforms((comb, bounding_boxes))
+                    LOGGER.debug(
+                        f"Sample {s}: {sample_comb.shape}, {sample_boxes.shape}"
                     )
-                    LOGGER.debug(f"Sample {s}: {sample_comb.shape}, {sample_boxes.shape}")
 
                     # Save image as .tif and bounding boxes as .npy
-                    tifffile.imwrite(out_path / "images" / (img_path.stem + f"_{s}.tif"), sample_comb.numpy())
+                    tifffile.imwrite(
+                        out_path / "images" / (img_path.stem + f"_{s}.tif"),
+                        sample_comb.numpy(),
+                    )
                     np.save(
-                        out_path / "boxes" /(img_path.stem + f"_{s}.npy"),
-                        sample_boxes.numpy()
+                        out_path / "boxes" / (img_path.stem + f"_{s}.npy"),
+                        sample_boxes.numpy(),
                     )
             else:
                 # For test split, save the full image and bounding boxes without augmentation
                 io.imsave(out_path / "images" / (img_path.stem + ".tif"), comb.numpy())
                 np.save(
-                    out_path / "boxes"/ (img_path.stem + "_boxes.npy"),
-                    bounding_boxes.numpy()
+                    out_path / "boxes" / (img_path.stem + "_boxes.npy"),
+                    bounding_boxes.numpy(),
                 )
         return out_path
 
