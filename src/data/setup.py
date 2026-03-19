@@ -14,6 +14,11 @@ from torchvision.transforms.v2 import (
 )
 from src.utils.transforms import ToTensor
 from rich.progress import track
+from skimage import io
+import numpy as np
+from skimage import io
+import numpy as np
+import tifffile
 
 
 class SetupNeonTreeData(metaclass=SingletonMeta):
@@ -78,14 +83,18 @@ class SetupNeonTreeData(metaclass=SingletonMeta):
 
         # load images and labels, create torch data, save to pt_data
         LOGGER.log_and_print(f"Processing {split} split...")
+        num_files = len(list(in_path.glob("*.tif")))
         LOGGER.debug(
-            f"Looking for images in: {in_path}\t{len(list(in_path.glob('*.tif')))} images found."
+            f"Looking for images in: {in_path}\t{num_files} images found."
         )
-        for img_path in in_path.glob("*.tif"):
-
+        for img_path in track(in_path.glob("*.tif"), description=f"Loading {split}...", total=num_files):
+            # Setup output directories for images and bounding boxes
             out_path = PT_DATA_PATH / split
             out_path.mkdir(parents=True, exist_ok=True)
+            (out_path / "images").mkdir(parents=True, exist_ok=True)
+            (out_path / "boxes").mkdir(parents=True, exist_ok=True)
 
+            # Load images and annotations, stack RGB and CHM channels
             LOGGER.info(f"Processing image: {img_path.name}")
             label_path = (NEON_TREE_PATH / "annotations" / img_path.stem).with_suffix(
                 ".xml"
@@ -102,7 +111,6 @@ class SetupNeonTreeData(metaclass=SingletonMeta):
             
             # Normalize CHM to [0, 1] range and clamp negative values to 0
             chm = torch.clamp(chm, min=0) / CHM_MAX
-            LOGGER.debug(f"{rgb.shape}, {chm.shape}")
             bounding_boxes = self._load_bounding_boxes(
                 label_path, canvas_size=rgb.shape[1:]
             )
@@ -124,21 +132,26 @@ class SetupNeonTreeData(metaclass=SingletonMeta):
             
             if split == "train":
                 LOGGER.info(f"Generating {num_samples} samples from {img_path.name}...")
-                for s in track(range(num_samples), description=f"{split}:{img_path.stem}:samples"):
+                for s in range(num_samples):
                     # Get 400x400 random crop of the combined tensor and corresponding bounding boxes
                     sample_comb, sample_boxes = transforms(
                         (comb, bounding_boxes)
                     )
-                    # save comb and bounding_boxes to pt_data
-                    torch.save(
-                        (sample_comb, sample_boxes),
-                        out_path / (img_path.stem + f"_{s}.pt"),
+                    LOGGER.debug(f"Sample {s}: {sample_comb.shape}, {sample_boxes.shape}")
+
+                    # Save image as .tif and bounding boxes as .npy
+                    tifffile.imwrite(out_path / "images" / (img_path.stem + f"_{s}.tif"), sample_comb.numpy())
+                    np.save(
+                        out_path / "boxes" /(img_path.stem + f"_{s}.npy"),
+                        sample_boxes.numpy()
                     )
             else:
                 # For test split, save the full image and bounding boxes without augmentation
-                torch.save((comb, bounding_boxes), out_path / (img_path.stem + ".pt"))
-            
-            
+                io.imsave(out_path / "images" / (img_path.stem + ".tif"), comb.numpy())
+                np.save(
+                    out_path / "boxes"/ (img_path.stem + "_boxes.npy"),
+                    bounding_boxes.numpy()
+                )
         return out_path
 
     def _load_image(self, img_path, target_size: tuple[int, int] | None = None):
