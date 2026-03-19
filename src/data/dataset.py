@@ -3,7 +3,6 @@ from torch import Tensor
 from torch.utils.data import Dataset
 from torchvision.transforms.v2 import Normalize, Compose
 from pathlib import Path
-from src.const import CHANNEL_MEANS, CHANNEL_STDEVS
 from src.data.setup import SetupNeonTreeData
 
 
